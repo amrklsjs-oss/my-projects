@@ -1,0 +1,5 @@
+streamlit
+pillow
+numpy
+matplotlib
+& "C:\Users\user\Desktop\intelligent Project\.venv\Scripts\streamlit.exe" run "C:\Users\user\Desktop\Image Processing Project\app.py"

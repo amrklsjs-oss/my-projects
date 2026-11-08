@@ -1,0 +1,6 @@
+heart_rate
+systolic_bp
+diastolic_bp
+oxygen_saturation
+temperature
+wait_time

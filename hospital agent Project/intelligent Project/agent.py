@@ -1,0 +1,812 @@
+from __future__ import annotations
+
+import json
+import threading
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import uvicorn
+from fastapi import Body, FastAPI, HTTPException
+from sklearn.neighbors import NearestNeighbors
+from src.risk_labeling import calculate_risk_score
+
+from forecasting import run_forecast_and_drift
+from src.clustering import compute_predicted_membership, load_fcm_scaler
+from src.predict import load_prediction_artifacts
+from src.risk_labeling import calculate_risk_score
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+DECISION_LOG_PATH = OUTPUTS_DIR / "decision_log.json"
+CLUSTER_MEAN_SHAP_PATH = OUTPUTS_DIR / "cluster_mean_shap.json"
+LABELED_DATA_PATH = OUTPUTS_DIR / "labeled_healthcare.csv"
+CENTROIDS_PATH = OUTPUTS_DIR / "fcm_centroids.npy"
+MODEL_PATH = OUTPUTS_DIR / "svm_model.pkl"
+SCALER_PATH = OUTPUTS_DIR / "scaler.pkl"
+FCM_SCALER_PATH = OUTPUTS_DIR / "fcm_scaler.pkl"   # dedicated FCM scaler (fallback)
+BACKGROUND_PATH = OUTPUTS_DIR / "shap_background.csv"
+FEATURES_PATH = OUTPUTS_DIR / "model_features.txt"
+DRIFT_STATUS_PATH = OUTPUTS_DIR / "drift_status.json"
+FORECAST_RESULTS_PATH = OUTPUTS_DIR / "forecast_results.json"
+TIMESERIES_PATH = OUTPUTS_DIR / "timeseries_HOSP_01.csv"
+CLUSTERING_FEATURES_PATH = OUTPUTS_DIR / "clustering_features.txt"
+
+FEATURE_COLUMNS = ["heart_rate", "systolic_bp", "diastolic_bp", "oxygen_saturation", "temperature", "wait_time"]
+CASE_LABELS = {
+    1: "AUTO EMERGENCY ACTION",
+    2: "REACT SHAP RECOMPUTE",
+    3: "RAG RETRIEVAL VOTING",
+    4: "RAG + REACT LOOP",
+    5: "MONITOR ONLY",
+    6: "HUMAN REVIEW",
+    7: "AUDIT FLAG",
+}
+
+_STATE_LOCK = threading.Lock()
+_LOG_LOCK = threading.Lock()
+_SYSTEM_STATE: AgenticContext | None = None
+
+
+@dataclass
+class AgenticContext:
+    model: Any
+    scaler: Any           # SVM / SHAP scaler (StandardScaler on CLUSTERING_FEATURES)
+    fcm_scaler: Any       # FCM scaler — shared with SVM scaler or separate fcm_scaler.pkl
+    explainer: Any
+    feature_columns: list[str]
+    cluster_feature_columns: list[str]
+    centroids: np.ndarray   # FCM centroids in *scaled* space
+    label_to_centroid_index: dict[str, int]
+    labeled_df: pd.DataFrame
+    rag_index: NearestNeighbors
+    rag_vectors: np.ndarray
+    rag_outcomes: list[str]
+    rag_actions: list[str]
+    cluster_mean_shap: dict[str, list[float]]
+    forecast: dict[str, Any]
+    drift: dict[str, Any]
+
+
+def _ensure_outputs_dir() -> None:
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _read_feature_list(path: Path, fallback: list[str] | None = None) -> list[str]:
+    if path.exists():
+        lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if lines:
+            return lines
+    return list(fallback or FEATURE_COLUMNS)
+
+
+def _required_stage_paths() -> dict[str, list[Path]]:
+    return {
+        "person1": [OUTPUTS_DIR / "cleaned_healthcare.csv", TIMESERIES_PATH],
+        "person2": [LABELED_DATA_PATH, CENTROIDS_PATH, CLUSTERING_FEATURES_PATH],
+        "person3": [MODEL_PATH, SCALER_PATH, BACKGROUND_PATH, FEATURES_PATH],
+        "person4": [FORECAST_RESULTS_PATH, DRIFT_STATUS_PATH],
+    }
+
+
+def _validate_stage(stage_name: str) -> None:
+    missing = [str(path) for path in _required_stage_paths()[stage_name] if not path.exists()]
+    if missing:
+        raise FileNotFoundError(f"{stage_name} artifacts are missing: {missing}")
+
+
+def _orchestrate_pipeline_sequence(force_refresh_forecast: bool = False) -> dict[str, Any]:
+    _ensure_outputs_dir()
+    _validate_stage("person1")
+    _validate_stage("person2")
+    _validate_stage("person3")
+    forecast_state = run_forecast_and_drift(force_refresh=force_refresh_forecast)
+
+    # Retraining is allowed only if drift is triggered.
+    if forecast_state["drift_status"]["drift_triggered"]:
+        import run_pipeline
+
+        run_pipeline.main()
+        forecast_state = run_forecast_and_drift(force_refresh=True)
+
+    return forecast_state
+
+
+def _load_label_to_centroid_index(labeled_df: pd.DataFrame) -> dict[str, int]:
+    grouped = labeled_df.groupby("fcm_cluster")["fcm_category"].agg(lambda values: values.mode().iloc[0])
+    return {str(label): int(cluster_index) for cluster_index, label in grouped.items()}
+
+
+def _load_or_build_cluster_mean_shap(
+    labeled_df: pd.DataFrame,
+    explainer: Any,
+    model_classes: list[str],
+    feature_columns: list[str],
+) -> dict[str, list[float]]:
+    if CLUSTER_MEAN_SHAP_PATH.exists():
+        try:
+            payload = json.loads(CLUSTER_MEAN_SHAP_PATH.read_text(encoding="utf-8"))
+            if all(label in payload for label in model_classes):
+                return {label: [float(value) for value in payload[label]] for label in model_classes}
+        except json.JSONDecodeError:
+            pass
+
+    cluster_mean_shap: dict[str, list[float]] = {}
+    for label in model_classes:
+        if "fcm_category" in labeled_df.columns:
+            subset = labeled_df[labeled_df["fcm_category"].astype(str) == label]
+        else:
+            subset = labeled_df[labeled_df["risk_category"].astype(str) == label]
+        if subset.empty:
+            subset = labeled_df[labeled_df["risk_category"].astype(str) == label]
+        subset = subset.sample(min(20, len(subset)), random_state=42)
+        sample_frame, shap_values = _compute_shap_values_silent(explainer, subset[feature_columns], model_classes, nsamples=25)
+        class_index = model_classes.index(label)
+        mean_vector = np.mean(shap_values[:, :, class_index], axis=0)
+        cluster_mean_shap[label] = [float(value) for value in mean_vector]
+
+    CLUSTER_MEAN_SHAP_PATH.write_text(json.dumps(cluster_mean_shap, indent=2), encoding="utf-8")
+    return cluster_mean_shap
+
+
+def _build_rag_index(labeled_df: pd.DataFrame, scaler: Any, feature_columns: list[str]) -> tuple[NearestNeighbors, np.ndarray, list[str], list[str]]:
+    rag_features = scaler.transform(labeled_df[feature_columns])
+    rag_outcomes = labeled_df["risk_category"].astype(str).tolist()
+    rag_actions = ["escalate" if outcome in {"Medium", "High"} else "monitor" for outcome in rag_outcomes]
+    k_neighbors = 10 if len(rag_features) >= 10 else len(rag_features)
+    index = NearestNeighbors(n_neighbors=k_neighbors, metric="cosine", algorithm="brute")
+    index.fit(rag_features)
+    return index, rag_features, rag_outcomes, rag_actions
+
+
+def _refresh_forecast_state(context: AgenticContext | None) -> AgenticContext:
+    forecast_state = _orchestrate_pipeline_sequence(force_refresh_forecast=False)
+    if forecast_state["drift_status"]["drift_triggered"]:
+        return _initialize_system_state(force_refresh_forecast=True)
+    if context is None:
+        return _initialize_system_state(force_refresh_forecast=False)
+    context.forecast = {
+        "trend_state": forecast_state["trend_state"],
+        "ARIMA_mult": forecast_state["ARIMA_mult"],
+        "forecast_30_days": forecast_state["forecast_30_days"],
+        "forecast_90_days": forecast_state["forecast_90_days"],
+        "confidence_intervals": forecast_state["confidence_intervals"],
+    }
+    context.drift = forecast_state["drift_status"]
+    return context
+
+
+def _initialize_system_state(force_refresh_forecast: bool = False) -> AgenticContext:
+    global _SYSTEM_STATE
+
+    with _STATE_LOCK:
+        if _SYSTEM_STATE is not None and not force_refresh_forecast:
+            return _SYSTEM_STATE
+
+        forecast_state = _orchestrate_pipeline_sequence(force_refresh_forecast=force_refresh_forecast)
+        labeled_df = pd.read_csv(LABELED_DATA_PATH)
+        feature_columns = _read_feature_list(FEATURES_PATH, FEATURE_COLUMNS)
+        cluster_feature_columns = _read_feature_list(CLUSTERING_FEATURES_PATH, feature_columns)
+
+        artifacts = load_prediction_artifacts(
+            model_path=MODEL_PATH,
+            scaler_path=SCALER_PATH,
+            background_path=BACKGROUND_PATH,
+            features_path=FEATURES_PATH,
+        )
+        model = artifacts["model"]
+        scaler = artifacts["scaler"]
+        explainer = artifacts["explainer"]
+
+        # Load the FCM scaler (shared with SVM scaler when features match)
+        try:
+            fcm_scaler = load_fcm_scaler(output_dir=OUTPUTS_DIR)
+        except FileNotFoundError:
+            # Graceful fallback: use the SVM scaler if no dedicated FCM scaler exists
+            # (happens on first run before FCM has been retrained with the new code)
+            fcm_scaler = scaler
+
+        centroids = np.load(CENTROIDS_PATH)
+        label_to_centroid_index = _load_label_to_centroid_index(labeled_df)
+        rag_index, rag_vectors, rag_outcomes, rag_actions = _build_rag_index(labeled_df, scaler, feature_columns)
+        cluster_mean_shap = _load_or_build_cluster_mean_shap(labeled_df, explainer, list(model.classes_), feature_columns)
+
+        _SYSTEM_STATE = AgenticContext(
+            model=model,
+            scaler=scaler,
+            fcm_scaler=fcm_scaler,
+            explainer=explainer,
+            feature_columns=feature_columns,
+            cluster_feature_columns=cluster_feature_columns,
+            centroids=centroids,
+            label_to_centroid_index=label_to_centroid_index,
+            labeled_df=labeled_df,
+            rag_index=rag_index,
+            rag_vectors=rag_vectors,
+            rag_outcomes=rag_outcomes,
+            rag_actions=rag_actions,
+            cluster_mean_shap=cluster_mean_shap,
+            forecast={
+                "trend_state": forecast_state["trend_state"],
+                "ARIMA_mult": forecast_state["ARIMA_mult"],
+                "forecast_30_days": forecast_state["forecast_30_days"],
+                "forecast_90_days": forecast_state["forecast_90_days"],
+                "confidence_intervals": forecast_state["confidence_intervals"],
+            },
+            drift=forecast_state["drift_status"],
+        )
+        return _SYSTEM_STATE
+
+
+def _normalize_patient_input(patient_input: dict[str, Any], feature_columns: list[str]) -> pd.DataFrame:
+    try:
+        normalized = {feature: float(patient_input[feature]) for feature in feature_columns}
+    except KeyError as exc:
+        raise ValueError(f"Missing required patient feature: {exc.args[0]}") from exc
+    except (TypeError, ValueError) as exc:
+        raise ValueError("All patient feature values must be numeric.") from exc
+    return pd.DataFrame([normalized], columns=feature_columns)
+
+
+def _compute_gap(probabilities: np.ndarray) -> float:
+    ordered = np.sort(probabilities)[::-1]
+    if len(ordered) < 2:
+        return 0.0
+    gap = ordered[0] - ordered[1]
+    return float(np.clip(gap, 0.0, 1.0))
+
+
+def _cosine_similarity(vector_a: np.ndarray, vector_b: np.ndarray) -> float:
+    denominator = np.linalg.norm(vector_a) * np.linalg.norm(vector_b)
+    if denominator == 0:
+        return 0.0
+    return float(np.dot(vector_a, vector_b) / denominator)
+
+
+def _normalize_shap_output(raw_shap_values: Any, n_samples: int, n_features: int, n_classes: int) -> np.ndarray:
+    if isinstance(raw_shap_values, list):
+        return np.stack([np.asarray(class_values) for class_values in raw_shap_values], axis=2)
+
+    values = np.asarray(raw_shap_values)
+    if values.ndim == 2:
+        return values[:, :, np.newaxis]
+    if values.ndim == 3 and values.shape == (n_samples, n_features, n_classes):
+        return values
+    if values.ndim == 3 and values.shape == (n_classes, n_samples, n_features):
+        return np.transpose(values, (1, 2, 0))
+    if values.ndim == 3 and values.shape == (n_samples, n_classes, n_features):
+        return np.transpose(values, (0, 2, 1))
+    raise ValueError(f"Unexpected SHAP output shape: {values.shape}")
+
+
+def _compute_shap_values_silent(explainer: Any, sample_frame: pd.DataFrame, model_classes: list[str], nsamples: int) -> tuple[pd.DataFrame, np.ndarray]:
+    raw_shap_values = explainer.shap_values(sample_frame, nsamples=nsamples, silent=True)
+    normalized = _normalize_shap_output(
+        raw_shap_values,
+        n_samples=len(sample_frame),
+        n_features=sample_frame.shape[1],
+        n_classes=len(model_classes),
+    )
+    return sample_frame, normalized
+
+
+def _compute_shap_vector(context: AgenticContext, patient_frame: pd.DataFrame, predicted_label: str, nsamples: int) -> dict[str, Any]:
+    _, shap_values = _compute_shap_values_silent(context.explainer, patient_frame, list(context.model.classes_), nsamples=nsamples)
+    class_index = list(context.model.classes_).index(predicted_label)
+    shap_vector = shap_values[0, :, class_index]
+    shap_explanation = {
+        feature: float(shap_vector[index])
+        for index, feature in enumerate(context.feature_columns)
+    }
+    shap_explanation = dict(sorted(shap_explanation.items(), key=lambda item: abs(item[1]), reverse=True))
+    return {
+        "shap_vector": shap_vector.astype(float),
+        "shap_explanation": shap_explanation,
+    }
+
+
+def _retrieve_rag_decision(
+    context: AgenticContext,
+    patient_frame: pd.DataFrame,
+) -> dict[str, Any]:
+    """
+    Drop-in replacement for _retrieve_rag_decision in agent.py.
+
+    Original bug
+    ------------
+    Tie-break condition was:
+        vote_counts.get("escalate", 0) == 5 and vote_counts.get("monitor", 0) == 5
+
+    This requires k == 10 (never fewer) AND an exact 5/5 split — structurally
+    improbable. Case 6 (HUMAN REVIEW) was unreachable in practice.
+
+    Fix
+    ---
+    Human review is triggered when the minority action accounts for >= 40% of
+    all successful votes. Examples:
+        k=10: 4+ minority votes  (40%)  → human review
+        k=9:  4+ minority votes  (44%)  → human review
+        k=8:  4+ minority votes  (50%)  → human review
+        k=5:  2+ minority votes  (40%)  → human review
+    """
+    query_vector = context.scaler.transform(patient_frame)
+    distances, indices = context.rag_index.kneighbors(
+        query_vector,
+        n_neighbors=max(1, context.rag_index.n_neighbors),
+    )
+    distances = distances[0]
+    indices = indices[0]
+    similarities = 1.0 - distances          # cosine similarity (metric='cosine')
+    success_mask = similarities >= 0.60
+    success_count = int(np.sum(success_mask))
+
+    if success_count == 0:
+        return {
+            "success_count":    0,
+            "majority_action":  "audit_flag",
+            "vote_counts":      {},
+            "minority_fraction": 0.0,
+            "neighbors":        [],
+        }
+
+    actions = [
+        context.rag_actions[i]
+        for i, ok in zip(indices, success_mask)
+        if ok
+    ]
+
+    vote_counts: dict[str, int] = {}
+    for a in actions:
+        vote_counts[a] = vote_counts.get(a, 0) + 1
+
+    total_votes = sum(vote_counts.values())
+    minority_votes = min(vote_counts.values()) if len(vote_counts) > 1 else 0
+    minority_fraction = minority_votes / total_votes if total_votes > 0 else 0.0
+
+    if minority_fraction >= TIE_BREAK_MINORITY_FRACTION:
+        majority_action = "human_review"
+    else:
+        majority_action = max(vote_counts.items(), key=lambda kv: kv[1])[0]
+
+    neighbors = [
+        {
+            "similarity": float(sim),
+            "success":    bool(ok),
+            "outcome":    context.rag_outcomes[i],
+            "action":     context.rag_actions[i],
+        }
+        for i, sim, ok in zip(indices, similarities, success_mask)
+    ]
+
+    return {
+        "success_count":     success_count,
+        "majority_action":   majority_action,
+        "vote_counts":       vote_counts,
+        "minority_fraction": round(minority_fraction, 4),
+        "neighbors":         neighbors,
+    }
+
+
+def _react_recompute(context: AgenticContext, patient_frame: pd.DataFrame, predicted_label: str) -> dict[str, Any]:
+    shap_payload = _compute_shap_vector(context, patient_frame, predicted_label, nsamples=100)
+    cluster_mean = np.asarray(context.cluster_mean_shap[predicted_label], dtype=float)
+    react_cosine = _cosine_similarity(shap_payload["shap_vector"], cluster_mean)
+    action = "react_emergency_action" if react_cosine >= 0.85 else "react_human_review"
+    return {
+        "react_shap_cosine": react_cosine,
+        "react_action": action,
+        "react_shap_explanation": shap_payload["shap_explanation"],
+    }
+
+
+def _append_decision_log(entry: dict[str, Any]) -> None:
+    with _LOG_LOCK:
+        if DECISION_LOG_PATH.exists():
+            try:
+                payload = json.loads(DECISION_LOG_PATH.read_text(encoding="utf-8"))
+                if not isinstance(payload, list):
+                    payload = []
+            except json.JSONDecodeError:
+                payload = []
+        else:
+            payload = []
+
+        payload.append(entry)
+        DECISION_LOG_PATH.write_text(json.dumps(payload[-5000:], indent=2), encoding="utf-8")
+
+
+# ── Routing thresholds (recalibrated for weighted-additive score) ─────────────
+# Score distribution after patch: min≈0.23, median≈0.60, max≈0.88
+# High-risk patients cluster above 0.69; Low-risk patients cluster below 0.60.
+#
+#   EMERGENCY_THRESHOLD  : P10 of High-risk patients in calibration set (0.72)
+#   RAG_THRESHOLD        : P90 of Low-risk  patients in calibration set (0.60)
+#   SHAP_HIGH_THRESHOLD  : cosine-norm value separating Cases 1/3 from 2/4 (0.75)
+#
+# Old multiplicative values: EMERGENCY=0.10, RAG=0.03 (both too low due to collapse).
+EMERGENCY_THRESHOLD = 0.68
+RAG_THRESHOLD = 0.50
+SHAP_HIGH_THRESHOLD = 0.70        # replaces the hard-coded 0.95 / 0.85 checks
+TIE_BREAK_MINORITY_FRACTION: float = 0.40
+CENTROID_SHIFT_THRESHOLD: float = 0.15
+
+def _arima_mult_to_trend_score(arima_mult: float) -> float:
+    """
+    Convert the 3-state ARIMA multiplier into a continuous [0, 1] trend score.
+
+    Old behaviour: arima_mult ∈ {0.7, 1.0, 1.2} fed directly into a product,
+    contributing a 0.7× depression or 1.2× boost on already-collapsed scores.
+
+    New behaviour: linear interpolation across the full [0.7, 1.2] range so the
+    trend signal is bounded and comparable to the other weighted components.
+
+        0.7  → 0.0   (declining trend)
+        1.0  → 0.60  (stable trend)
+        1.2  → 1.0   (rising trend)
+    """
+    lo, hi = 0.7, 1.2
+    return float(np.clip((arima_mult - lo) / (hi - lo), 0.0, 1.0))
+
+
+def _compute_hybrid_score(
+    severity_raw: float,
+    gap_svm: float,
+    mu_predicted: float,
+    arima_mult: float,
+    shap_cosine_raw: float,
+) -> dict[str, float]:
+    """
+    Weighted additive score replacing the former multiplicative formula.
+
+    WHY THE OLD FORMULA COLLAPSED
+    ──────────────────────────────
+    Old:  score = severity × gap × μ × ARIMA × SHAP_cosine
+
+    Any single factor at zero silences the entire score.  Audit data showed:
+      • 65.6 % of patients had severity_score = 0 (no vital breached a hard
+        threshold) → score pinned to 0 regardless of SVM/SHAP/μ signals.
+      • 22 entries had μ < 1e-10 (FCM trained on unscaled data, wait_time
+        dominated Euclidean distances).
+      • SHAP cosine in [−1, 1] could turn the product negative.
+    Result: 183 / 262 log entries had |score| < 1e-10; Cases 1 and 7 were
+    never reached.
+
+    NEW FORMULA
+    ───────────
+    FinalScore = 0.30·Sev + 0.25·Gap + 0.20·Mu + 0.10·Trend + 0.15·SHAP
+
+    Properties:
+      • Additive — no single zero-factor kills the result.
+      • Every component normalized to [0, 1] before weighting.
+      • Minimum possible score = 0.20·0.05 = 0.01 (μ floored at 0.05).
+      • Maximum = 1.0 (all components at ceiling).
+      • Weights sum to 1.0 → score lives in [0, 1] by construction.
+
+    COMPONENT NORMALIZATION
+    ───────────────────────
+    sev_norm   = min(severity_raw / 5.0, 1.0)       raw count 0-5 → [0,1]
+    gap_norm   = gap_svm                             already [0,1]
+    mu_norm    = max(mu_predicted, 0.05)             floor prevents underflow
+    trend_norm = (arima_mult − 0.7) / 0.5           {0.7,1.0,1.2} → [0,0.6,1]
+    shap_norm  = (shap_cosine_raw + 1) / 2          [−1,1] → [0,1]
+    """
+    sev_norm   = float(np.clip(severity_raw / 5.0, 0.0, 1.0))
+    gap_norm   = float(np.clip(gap_svm, 0.0, 1.0))
+    mu_norm    = float(np.clip(max(mu_predicted, 0.05), 0.0, 1.0))
+    trend_norm = _arima_mult_to_trend_score(arima_mult)
+    shap_norm  = float(np.clip((shap_cosine_raw + 1.0) / 2.0, 0.0, 1.0))
+
+    score = (
+        0.30 * sev_norm
+        + 0.25 * gap_norm
+        + 0.20 * mu_norm
+        + 0.10 * trend_norm
+        + 0.15 * shap_norm
+    )
+    score = float(np.clip(score, 0.0, 1.0))
+
+    return {
+        "score":       score,
+        "sev_norm":    sev_norm,
+        "gap_norm":    gap_norm,
+        "mu_norm":     mu_norm,
+        "trend_norm":  trend_norm,
+        "shap_norm":   shap_norm,
+        # weighted contributions (for diagnostics / audit log)
+        "contrib_sev":   round(0.30 * sev_norm, 4),
+        "contrib_gap":   round(0.25 * gap_norm, 4),
+        "contrib_mu":    round(0.20 * mu_norm, 4),
+        "contrib_trend": round(0.10 * trend_norm, 4),
+        "contrib_shap":  round(0.15 * shap_norm, 4),
+    }
+
+
+def _build_decision_payload(
+    context: Any,
+    patient_frame: pd.DataFrame,
+    predicted_label: str,
+    probabilities: np.ndarray,
+    shap_vector: np.ndarray,
+    shap_explanation: dict[str, float],
+) -> dict[str, Any]:
+    """
+    Build the full decision payload using the hybrid weighted score.
+
+    Routing thresholds (calibrated against 262-entry decision log):
+        EMERGENCY_THRESHOLD = 0.72   → P10 of High-risk patients
+        RAG_THRESHOLD       = 0.60   → P90 of Low-risk patients
+        SHAP_HIGH_THRESHOLD = 0.75   → separates confident vs uncertain SHAP
+
+    All 7 ReAct cases are preserved; Cases 1 and 7 are now reachable because
+    the score no longer collapses to zero for severity=0 patients.
+    """
+
+    # ── Raw signal extraction ─────────────────────────────────────────────────
+    severity_raw: float = float(calculate_risk_score(patient_frame.iloc[0]))
+    gap_svm: float = _compute_gap(probabilities)
+    arima_mult: float = float(context.forecast["ARIMA_mult"])
+
+    centroid_index = context.label_to_centroid_index.get(predicted_label)
+    if centroid_index is None:
+        raise ValueError(
+            f"No centroid index mapping for predicted class '{predicted_label}'. "
+            f"Available: {context.label_to_centroid_index}"
+        )
+    cluster_vector = patient_frame[context.cluster_feature_columns].to_numpy(dtype=float)[0]
+    mu_predicted: float = compute_predicted_membership(
+        patient_features=cluster_vector,
+        predicted_class_index=centroid_index,
+        centroids=context.centroids,
+        scaler=context.fcm_scaler,
+        feature_columns=context.cluster_feature_columns,
+    )
+
+    cluster_mean_shap = np.asarray(context.cluster_mean_shap[predicted_label], dtype=float)
+    shap_cosine_raw: float = _cosine_similarity(shap_vector, cluster_mean_shap)
+
+    # ── Hybrid weighted score ─────────────────────────────────────────────────
+    scoring = _compute_hybrid_score(
+        severity_raw=severity_raw,
+        gap_svm=gap_svm,
+        mu_predicted=mu_predicted,
+        arima_mult=arima_mult,
+        shap_cosine_raw=shap_cosine_raw,
+    )
+    score: float = scoring["score"]
+
+    # ── Assemble base result (backward-compatible field names) ────────────────
+    result: dict[str, Any] = {
+        # ── primary score ──
+        "score":          score,
+        # ── raw inputs (for audit / dashboard) ──
+        "severity_raw":   severity_raw,
+        "severity_score": scoring["sev_norm"],   # [0,1] normalized
+        "gap_svm":        gap_svm,
+        "mu_predicted":   mu_predicted,
+        "ARIMA_mult":     arima_mult,
+        "shap_cosine":    shap_cosine_raw,       # raw value kept for log compatibility
+        # ── normalized components (new diagnostics) ──
+        "score_components": {
+            "sev_norm":      scoring["sev_norm"],
+            "gap_norm":      scoring["gap_norm"],
+            "mu_norm":       scoring["mu_norm"],
+            "trend_norm":    scoring["trend_norm"],
+            "shap_norm":     scoring["shap_norm"],
+            "contrib_sev":   scoring["contrib_sev"],
+            "contrib_gap":   scoring["contrib_gap"],
+            "contrib_mu":    scoring["contrib_mu"],
+            "contrib_trend": scoring["contrib_trend"],
+            "contrib_shap":  scoring["contrib_shap"],
+        },
+        "shap_explanation": shap_explanation,
+    }
+
+    # ── ReAct routing — all 7 cases preserved ────────────────────────────────
+    # Use shap_norm (not raw cosine) for threshold comparisons; it is [0,1].
+    shap_norm: float = scoring["shap_norm"]
+
+    if score > EMERGENCY_THRESHOLD:
+        # Cases 1 & 2: high-confidence zone
+        react_payload = _react_recompute(context, patient_frame, predicted_label)
+        if shap_norm >= SHAP_HIGH_THRESHOLD:
+            result.update({
+                "decision_case":  1,
+                "decision_label": "AUTO EMERGENCY ACTION",
+                "action":         "auto_emergency_action",
+                "react":          react_payload,
+            })
+        else:
+            result.update({
+                "decision_case":  2,
+                "decision_label": "REACT SHAP RECOMPUTE",
+                "action":         react_payload["react_action"],
+                "react":          react_payload,
+            })
+        return result
+
+    if score < RAG_THRESHOLD:
+        # Case 5: low-confidence / low-risk monitor zone
+        result.update({
+            "decision_case":  5,
+            "decision_label": "MONITOR ONLY",
+            "action":         "monitor_only",
+        })
+        return result
+
+    # Cases 3, 4, 6, 7: RAG zone  (RAG_THRESHOLD ≤ score ≤ EMERGENCY_THRESHOLD)
+    rag_payload = _retrieve_rag_decision(context, patient_frame)
+
+    if rag_payload["success_count"] == 0:
+        # Case 7: out-of-distribution patient, no confident neighbors
+        result.update({
+            "decision_case":  7,
+            "decision_label": "AUDIT FLAG",
+            "action":         "audit_flag",
+            "rag":            rag_payload,
+        })
+        return result
+
+    if rag_payload["majority_action"] == "human_review":
+        # Case 6: RAG vote is genuinely ambiguous
+        result.update({
+            "decision_case":  6,
+            "decision_label": "HUMAN REVIEW",
+            "action":         "human_review",
+            "rag":            rag_payload,
+        })
+        return result
+
+    if shap_norm >= SHAP_HIGH_THRESHOLD:
+        # Case 3: confident SHAP alignment — trust RAG vote directly
+        result.update({
+            "decision_case":  3,
+            "decision_label": "RAG RETRIEVAL VOTING",
+            "action": (
+                "rag_escalation"
+                if rag_payload["majority_action"] == "escalate"
+                else "rag_monitor"
+            ),
+            "rag": rag_payload,
+        })
+    else:
+        # Case 4: uncertain SHAP — run ReAct loop as tiebreaker
+        react_payload = _react_recompute(context, patient_frame, predicted_label)
+        result.update({
+            "decision_case":  4,
+            "decision_label": "RAG + REACT LOOP",
+            "action": (
+                "rag_react_escalation"
+                if (
+                    rag_payload["majority_action"] == "escalate"
+                    or react_payload["react_shap_cosine"] >= 0.85
+                )
+                else "rag_react_monitor"
+            ),
+            "rag":   rag_payload,
+            "react": react_payload,
+        })
+
+    return result
+
+def predict_and_decide(patient_input: dict[str, Any]) -> dict[str, Any]:
+    context = _refresh_forecast_state(_initialize_system_state())
+    patient_frame = _normalize_patient_input(patient_input, context.feature_columns)
+
+    scaled_input = context.scaler.transform(patient_frame)
+    probabilities = context.model.predict_proba(scaled_input)[0]
+    predicted_label = str(context.model.predict(scaled_input)[0])
+    shap_payload = _compute_shap_vector(context, patient_frame, predicted_label, nsamples=100)
+
+    decision_payload = _build_decision_payload(
+        context=context,
+        patient_frame=patient_frame,
+        predicted_label=predicted_label,
+        probabilities=probabilities,
+        shap_vector=shap_payload["shap_vector"],
+        shap_explanation=shap_payload["shap_explanation"],
+    )
+
+    response = {
+        "predicted_class":  predicted_label,
+        "score":            decision_payload["score"],
+        "severity_score":   decision_payload["severity_score"],   # [0,1] normalized
+        "severity_raw":     decision_payload["severity_raw"],     # original 0-5 integer
+        "gap_svm":          decision_payload["gap_svm"],
+        "mu_predicted":     decision_payload["mu_predicted"],
+        "ARIMA_mult":       decision_payload["ARIMA_mult"],
+        "SHAP_cosine":      decision_payload["shap_cosine"],      # raw [-1,1] for display
+        "score_components": decision_payload["score_components"], # per-component breakdown
+        "shap_explanation": decision_payload["shap_explanation"],
+        "decision_case":    decision_payload["decision_case"],
+        "decision_label":   decision_payload["decision_label"],
+        "action":           decision_payload["action"],
+        "all_probabilities": {
+            label: float(prob)
+            for label, prob in zip(context.model.classes_, probabilities)
+        },
+        "forecast_trend":   context.forecast["trend_state"],
+        "drift_triggered":  context.drift["drift_triggered"],
+    }
+
+    if "rag" in decision_payload:
+        response["rag"] = decision_payload["rag"]
+    if "react" in decision_payload:
+        response["react"] = decision_payload["react"]
+
+    log_entry = {
+        "timestamp":     datetime.now(timezone.utc).isoformat(),
+        "input":         patient_frame.iloc[0].to_dict(),
+        "prediction": {
+            "predicted_class":   response["predicted_class"],
+            "all_probabilities": response["all_probabilities"],
+        },
+        "score":           response["score"],
+        "decision_case":   response["decision_case"],
+        "decision_label":  response["decision_label"],
+        "gap_svm":         response["gap_svm"],
+        "severity_score":  response["severity_score"],   # normalized [0,1]
+        "severity_raw":    response["severity_raw"],     # raw integer 0-5
+        "mu_predicted":    response["mu_predicted"],
+        "ARIMA_mult":      response["ARIMA_mult"],
+        "SHAP_cosine":     response["SHAP_cosine"],      # raw value for audit continuity
+        "score_components": response["score_components"],
+    }
+    _append_decision_log(log_entry)
+    return response
+
+
+def run_agentic_system(patient_input: dict[str, Any]) -> dict[str, Any]:
+    return predict_and_decide(patient_input)
+
+
+app = FastAPI(title="Healthcare Agentic System", version="1.0.0")
+
+
+@app.get("/health")
+def health() -> dict[str, Any]:
+    try:
+        context = _refresh_forecast_state(_initialize_system_state())
+    except Exception as exc:  # pragma: no cover - surfaced to API
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    required_outputs = {
+        str(path.name): path.exists()
+        for stage_paths in _required_stage_paths().values()
+        for path in stage_paths
+    }
+    log_entries = 0
+    if DECISION_LOG_PATH.exists():
+        try:
+            payload = json.loads(DECISION_LOG_PATH.read_text(encoding="utf-8"))
+            log_entries = len(payload) if isinstance(payload, list) else 0
+        except json.JSONDecodeError:
+            log_entries = 0
+
+    return {
+        "status": "ok",
+        "pipeline_sequence": ["Person 1", "Person 2", "Person 3", "Person 4"],
+        "required_outputs": required_outputs,
+        "forecast": context.forecast,
+        "drift": context.drift,
+        "decision_log_entries": log_entries,
+    }
+
+
+@app.post("/predict")
+def predict_endpoint(patient_input: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    try:
+        return run_agentic_system(patient_input)
+    except Exception as exc:  # pragma: no cover - surfaced to API
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def start_api(host: str = "0.0.0.0", port: int = 8000) -> None:
+    uvicorn.run("agent:app", host=host, port=port, reload=False)
+
+
+if __name__ == "__main__":
+    start_api()

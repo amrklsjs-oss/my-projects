@@ -1,0 +1,426 @@
+from __future__ import annotations
+
+import itertools
+import json
+import warnings
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.tools.sm_exceptions import ConvergenceWarning
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+TIMESERIES_PATH = OUTPUTS_DIR / "timeseries_HOSP_01.csv"
+FORECAST_RESULTS_PATH = OUTPUTS_DIR / "forecast_results.json"
+DRIFT_STATUS_PATH = OUTPUTS_DIR / "drift_status.json"
+DECISION_LOG_PATH = OUTPUTS_DIR / "decision_log.json"
+CENTROIDS_PATH = OUTPUTS_DIR / "fcm_centroids.npy"
+LABELED_DATA_PATH = OUTPUTS_DIR / "labeled_healthcare.csv"
+CENTROID_REFERENCE_PATH = OUTPUTS_DIR / "centroid_reference.npy"
+CENTROID_HISTORY_PATH = OUTPUTS_DIR / "centroid_history.json"
+
+TREND_MULTIPLIERS = {
+    "RISING": 1.2,
+    "STABLE": 1.0,
+    "DECLINING": 0.7,
+}
+
+
+def _ensure_output_dir() -> None:
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _load_decision_log() -> list[dict[str, Any]]:
+    if not DECISION_LOG_PATH.exists():
+        return []
+    try:
+        payload = json.loads(DECISION_LOG_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    return payload if isinstance(payload, list) else []
+
+
+def _load_daily_series() -> pd.Series:
+    if not TIMESERIES_PATH.exists():
+        raise FileNotFoundError(f"Missing required time series file: {TIMESERIES_PATH}")
+
+    df = pd.read_csv(TIMESERIES_PATH, parse_dates=["TIMESTAMP"])
+    if "severity_score" not in df.columns:
+        raise ValueError("timeseries_HOSP_01.csv must contain `severity_score` for forecasting.")
+
+    daily = (
+        df.set_index("TIMESTAMP")
+        .sort_index()["severity_score"]
+        .resample("D")
+        .mean()
+        .interpolate(limit_direction="both")
+        .ffill()
+        .bfill()
+    )
+    if len(daily) < 21:
+        raise ValueError("At least 21 daily observations are required for SARIMA forecasting.")
+    return daily.astype(float)
+
+
+def _fit_best_sarima(series: pd.Series):
+    candidate_orders = [(1, 1, 1), (2, 1, 1), (1, 1, 2), (2, 1, 2)]
+    candidate_seasonal = [(0, 1, 1, 7), (1, 1, 1, 7), (1, 0, 1, 7)]
+
+    best_result = None
+    best_config: dict[str, Any] | None = None
+    best_aic = float("inf")
+
+    for order, seasonal_order in itertools.product(candidate_orders, candidate_seasonal):
+        try:
+            model = SARIMAX(
+                series,
+                order=order,
+                seasonal_order=seasonal_order,
+                enforce_stationarity=False,
+                enforce_invertibility=False,
+            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", ConvergenceWarning)
+                warnings.simplefilter("ignore", UserWarning)
+                fitted = model.fit(disp=False)
+        except Exception:
+            continue
+
+        if np.isfinite(fitted.aic) and fitted.aic < best_aic:
+            best_aic = float(fitted.aic)
+            best_result = fitted
+            best_config = {
+                "order": list(order),
+                "seasonal_order": list(seasonal_order),
+                "aic": best_aic,
+            }
+
+    if best_result is None or best_config is None:
+        raise RuntimeError("SARIMA fitting failed for all candidate configurations.")
+
+    return best_result, best_config
+
+
+def _serialize_forecast_block(predicted_mean: pd.Series, conf_int: pd.DataFrame) -> list[dict[str, float | str]]:
+    lower_name, upper_name = conf_int.columns[:2]
+    records: list[dict[str, float | str]] = []
+    for timestamp, value in predicted_mean.items():
+        ci_row = conf_int.loc[timestamp]
+        records.append(
+            {
+                "date": pd.Timestamp(timestamp).strftime("%Y-%m-%d"),
+                "forecast": float(value),
+                "lower": float(ci_row[lower_name]),
+                "upper": float(ci_row[upper_name]),
+            }
+        )
+    return records
+
+
+def _classify_trend(forecast_30_days: list[dict[str, float | str]]) -> tuple[str, float]:
+    values = np.array([float(record["forecast"]) for record in forecast_30_days], dtype=float)
+    if len(values) == 0:
+        return "STABLE", TREND_MULTIPLIERS["STABLE"]
+
+    baseline = max(abs(values[0]), 1e-6)
+    relative_change = (values[-1] - values[0]) / baseline
+    if relative_change > 0.03:
+        trend = "RISING"
+    elif relative_change < -0.03:
+        trend = "DECLINING"
+    else:
+        trend = "STABLE"
+    return trend, TREND_MULTIPLIERS[trend]
+
+
+def _weekly_gap_statistics(decision_log: list[dict[str, Any]]) -> tuple[list[dict[str, float | str]], bool]:
+    if not decision_log:
+        return [], False
+
+    rows = []
+    for entry in decision_log:
+        timestamp = entry.get("timestamp")
+        gap_svm = entry.get("gap_svm")
+        if timestamp is None or gap_svm is None:
+            continue
+        rows.append({"timestamp": timestamp, "gap_svm": float(gap_svm)})
+
+    if not rows:
+        return [], False
+
+    df = pd.DataFrame(rows)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
+    if df.empty:
+        return [], False
+
+    df["week_start"] = df["timestamp"].dt.tz_localize(None).dt.to_period("W").dt.start_time
+    weekly = df.groupby("week_start", as_index=False)["gap_svm"].mean()
+    weekly_records = [
+        {"week_start": row.week_start.strftime("%Y-%m-%d"), "mean_gap_svm": float(row.gap_svm)}
+        for row in weekly.itertuples(index=False)
+    ]
+
+    decreasing = False
+    if len(weekly) >= 3:
+        last_three = weekly["gap_svm"].tail(3).to_list()
+        decreasing = bool(last_three[0] > last_three[1] > last_three[2])
+
+    return weekly_records, decreasing
+
+
+def _load_label_to_centroid_index() -> dict[str, int]:
+    if not LABELED_DATA_PATH.exists():
+        return {}
+    df = pd.read_csv(LABELED_DATA_PATH, usecols=["fcm_cluster", "fcm_category"])
+    mapping: dict[str, int] = {}
+    grouped = df.groupby("fcm_cluster")["fcm_category"].agg(lambda values: values.mode().iloc[0])
+    for cluster_index, label in grouped.items():
+        mapping[str(label)] = int(cluster_index)
+    return mapping
+
+
+def _relative_centroid_distance(current_centroids: np.ndarray, reference_centroids: np.ndarray) -> float:
+    best_distance = float("inf")
+    for permutation in itertools.permutations(range(len(reference_centroids))):
+        distances = []
+        for current_index, reference_index in enumerate(permutation):
+            baseline = reference_centroids[reference_index]
+            relative = np.linalg.norm(current_centroids[current_index] - baseline) / (np.linalg.norm(baseline) + 1e-8)
+            distances.append(relative)
+        best_distance = min(best_distance, float(np.mean(distances)))
+    return best_distance
+
+
+def _load_fcm_scaler_for_drift() -> Any:
+    """
+    Load the FCM scaler for centroid-shift distance computation.
+    Returns None if no scaler is found (drift computation degrades gracefully).
+    """
+    for candidate in [OUTPUTS_DIR / "scaler.pkl", OUTPUTS_DIR / "fcm_scaler.pkl"]:
+        if candidate.exists():
+            try:
+                import joblib
+                loaded = joblib.load(candidate)
+                if hasattr(loaded, "transform"):
+                    return loaded
+            except Exception:
+                continue
+    return None
+
+
+def _live_centroid_shift(decision_log: list[dict[str, Any]], baseline_centroids: np.ndarray) -> float:
+    """
+    Compute the relative shift between the live per-label centroids (derived from
+    recent inference inputs) and the baseline FCM centroids.
+
+    IMPORTANT: baseline_centroids are now stored in *scaled space*.  Patient
+    feature vectors from the decision log must be scaled with the FCM scaler
+    before computing distances, otherwise the comparison is unit-mismatched.
+    """
+    if not decision_log:
+        return 0.0
+
+    label_to_index = _load_label_to_centroid_index()
+    if not label_to_index:
+        return 0.0
+
+    # Load the FCM scaler so live vectors can be projected into scaled space
+    fcm_scaler = _load_fcm_scaler_for_drift()
+
+    rows = []
+    for entry in decision_log:
+        timestamp = entry.get("timestamp")
+        patient_input = entry.get("input")
+        predicted_class = entry.get("prediction", {}).get("predicted_class")
+        if not timestamp or not isinstance(patient_input, dict) or predicted_class not in label_to_index:
+            continue
+        rows.append(
+            {
+                "timestamp": pd.to_datetime(timestamp, utc=True, errors="coerce"),
+                "predicted_class": predicted_class,
+                "features": patient_input,
+            }
+        )
+
+    if not rows:
+        return 0.0
+
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=28)
+    recent_rows = [row for row in rows if pd.notna(row["timestamp"]) and row["timestamp"] >= cutoff]
+    if not recent_rows:
+        return 0.0
+
+    feature_names = ["heart_rate", "systolic_bp", "diastolic_bp", "oxygen_saturation", "temperature", "wait_time"]
+    distances = []
+    for label, centroid_index in label_to_index.items():
+        label_vectors = []
+        for row in recent_rows:
+            if row["predicted_class"] != label:
+                continue
+            try:
+                label_vectors.append([float(row["features"][feature]) for feature in feature_names])
+            except (KeyError, TypeError, ValueError):
+                continue
+        if not label_vectors:
+            continue
+
+        raw_matrix = np.asarray(label_vectors, dtype=float)
+
+        # Scale to FCM space before computing the live centroid
+        if fcm_scaler is not None:
+            try:
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    scaled_matrix = fcm_scaler.transform(raw_matrix)
+            except Exception:
+                scaled_matrix = raw_matrix   # graceful degradation
+        else:
+            scaled_matrix = raw_matrix
+
+        live_centroid = np.mean(scaled_matrix, axis=0)
+        baseline = baseline_centroids[centroid_index]
+        relative_distance = np.linalg.norm(live_centroid - baseline) / (np.linalg.norm(baseline) + 1e-8)
+        distances.append(float(relative_distance))
+
+    return float(np.mean(distances)) if distances else 0.0
+
+
+def _centroid_shift_distance(decision_log: list[dict[str, Any]]) -> float:
+    if not CENTROIDS_PATH.exists():
+        return 0.0
+
+    current_centroids = np.load(CENTROIDS_PATH)
+    if not CENTROID_REFERENCE_PATH.exists():
+        np.save(CENTROID_REFERENCE_PATH, current_centroids)
+        CENTROID_HISTORY_PATH.write_text("[]", encoding="utf-8")
+        return 0.0
+
+    reference_centroids = np.load(CENTROID_REFERENCE_PATH)
+    baseline_distance = _relative_centroid_distance(current_centroids, reference_centroids)
+    live_distance = _live_centroid_shift(decision_log, reference_centroids)
+    combined_distance = float(max(baseline_distance, live_distance))
+
+    history_payload = []
+    if CENTROID_HISTORY_PATH.exists():
+        try:
+            history_payload = json.loads(CENTROID_HISTORY_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            history_payload = []
+
+    history_payload.append(
+        {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "baseline_distance": baseline_distance,
+            "live_distance": live_distance,
+            "combined_distance": combined_distance,
+        }
+    )
+    CENTROID_HISTORY_PATH.write_text(json.dumps(history_payload[-52:], indent=2), encoding="utf-8")
+    return combined_distance
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _dependencies_mtime() -> float:
+    dependency_paths = [TIMESERIES_PATH, DECISION_LOG_PATH, CENTROIDS_PATH, LABELED_DATA_PATH]
+    mtimes = [path.stat().st_mtime for path in dependency_paths if path.exists()]
+    return max(mtimes) if mtimes else 0.0
+
+
+def _load_cached_result() -> dict[str, Any] | None:
+    if not FORECAST_RESULTS_PATH.exists() or not DRIFT_STATUS_PATH.exists():
+        return None
+    output_mtime = min(FORECAST_RESULTS_PATH.stat().st_mtime, DRIFT_STATUS_PATH.stat().st_mtime)
+    if output_mtime < _dependencies_mtime():
+        return None
+    try:
+        forecast_payload = json.loads(FORECAST_RESULTS_PATH.read_text(encoding="utf-8"))
+        drift_payload = json.loads(DRIFT_STATUS_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return {
+        "forecast": forecast_payload,
+        "drift": drift_payload,
+    }
+
+
+def run_forecast_and_drift(force_refresh: bool = False) -> dict[str, Any]:
+    _ensure_output_dir()
+
+    if not force_refresh:
+        cached = _load_cached_result()
+        if cached is not None:
+            return {
+                "forecast_30_days": cached["forecast"]["forecast_30_days"],
+                "forecast_90_days": cached["forecast"]["forecast_90_days"],
+                "confidence_intervals": cached["forecast"]["confidence_intervals"],
+                "trend_state": cached["forecast"]["trend_state"],
+                "ARIMA_mult": cached["forecast"]["ARIMA_mult"],
+                "drift_status": cached["drift"],
+            }
+
+    daily_series = _load_daily_series()
+    fitted_model, model_config = _fit_best_sarima(daily_series)
+    forecast_steps = 90
+    forecast_frame = fitted_model.get_forecast(steps=forecast_steps)
+    predicted_mean = forecast_frame.predicted_mean.clip(lower=0.0)
+    conf_int = forecast_frame.conf_int()
+
+    forecast_90_days = _serialize_forecast_block(predicted_mean, conf_int)
+    forecast_30_days = forecast_90_days[:30]
+    confidence_intervals = {
+        "30_days": [{"date": item["date"], "lower": item["lower"], "upper": item["upper"]} for item in forecast_30_days],
+        "90_days": [{"date": item["date"], "lower": item["lower"], "upper": item["upper"]} for item in forecast_90_days],
+    }
+
+    trend_state, arima_multiplier = _classify_trend(forecast_30_days)
+    forecast_payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source_file": str(TIMESERIES_PATH),
+        "target_series": "daily_mean_severity_score",
+        "trend_state": trend_state,
+        "ARIMA_mult": arima_multiplier,
+        "model": model_config,
+        "forecast_30_days": forecast_30_days,
+        "forecast_90_days": forecast_90_days,
+        "confidence_intervals": confidence_intervals,
+    }
+
+    decision_log = _load_decision_log()
+    weekly_gap_records, gap_decreasing = _weekly_gap_statistics(decision_log)
+    centroid_shift_distance = _centroid_shift_distance(decision_log)
+    drift_triggered = bool(gap_decreasing and centroid_shift_distance > 0.15)
+
+    drift_payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "weekly_mean_gap_svm": weekly_gap_records,
+        "gap_decreasing_for_3_consecutive_weeks": gap_decreasing,
+        "centroid_shift_distance": centroid_shift_distance,
+        "centroid_shift_threshold": 0.15,
+        "drift_triggered": drift_triggered,
+    }
+
+    _write_json(FORECAST_RESULTS_PATH, forecast_payload)
+    _write_json(DRIFT_STATUS_PATH, drift_payload)
+
+    return {
+        "forecast_30_days": forecast_30_days,
+        "forecast_90_days": forecast_90_days,
+        "confidence_intervals": confidence_intervals,
+        "trend_state": trend_state,
+        "ARIMA_mult": arima_multiplier,
+        "drift_status": drift_payload,
+    }
+
+
+if __name__ == "__main__":
+    print(json.dumps(run_forecast_and_drift(force_refresh=True), indent=2))

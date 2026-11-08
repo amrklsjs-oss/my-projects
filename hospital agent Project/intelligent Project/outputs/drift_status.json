@@ -1,0 +1,17 @@
+{
+  "generated_at": "2026-05-09T03:50:27.749105+00:00",
+  "weekly_mean_gap_svm": [
+    {
+      "week_start": "2026-04-27",
+      "mean_gap_svm": 0.7488067686510956
+    },
+    {
+      "week_start": "2026-05-04",
+      "mean_gap_svm": 0.8879602454556955
+    }
+  ],
+  "gap_decreasing_for_3_consecutive_weeks": false,
+  "centroid_shift_distance": 0.999606653502461,
+  "centroid_shift_threshold": 0.15,
+  "drift_triggered": false
+}

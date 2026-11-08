@@ -1,0 +1,14 @@
+{
+  "accuracy": 0.978603006189213,
+  "f1_weighted": 0.9785724652586615,
+  "class_distribution": {
+    "Low": 17647,
+    "Medium": 9961,
+    "High": 665
+  },
+  "best_params": {
+    "kernel": "rbf",
+    "gamma": 1.0,
+    "C": 10
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "condition": "Low",
+  "probability": 0.9999998999999635,
+  "shap_explanation": {
+    "heart_rate": 0.14275729100981652,
+    "systolic_bp": 0.09453058498638227,
+    "oxygen_saturation": 0.027400366249115227,
+    "temperature": 0.027012892892353684,
+    "diastolic_bp": 0.006797941691448991,
+    "wait_time": 0.003816747060441661
+  },
+  "all_probabilities": {
+    "High": 1.6666674432768123e-14,
+    "Low": 0.9999998999999635,
+    "Medium": 1.0000001994734589e-07
+  }
+}

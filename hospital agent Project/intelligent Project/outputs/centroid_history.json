@@ -1,0 +1,314 @@
+[
+  {
+    "timestamp": "2026-05-08T06:56:49.143034+00:00",
+    "baseline_distance": 0.0,
+    "live_distance": 0.2586088658978733,
+    "combined_distance": 0.2586088658978733
+  },
+  {
+    "timestamp": "2026-05-08T06:57:37.496606+00:00",
+    "baseline_distance": 0.0,
+    "live_distance": 0.25922094613307095,
+    "combined_distance": 0.25922094613307095
+  },
+  {
+    "timestamp": "2026-05-08T06:58:22.197957+00:00",
+    "baseline_distance": 0.0,
+    "live_distance": 0.25979019692141253,
+    "combined_distance": 0.25979019692141253
+  },
+  {
+    "timestamp": "2026-05-08T06:59:16.396273+00:00",
+    "baseline_distance": 0.0,
+    "live_distance": 0.25969746031193824,
+    "combined_distance": 0.25969746031193824
+  },
+  {
+    "timestamp": "2026-05-08T07:00:14.115236+00:00",
+    "baseline_distance": 0.0,
+    "live_distance": 0.2587324513274883,
+    "combined_distance": 0.2587324513274883
+  },
+  {
+    "timestamp": "2026-05-08T16:40:18.036113+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9987372238407124,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T16:40:37.253928+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9987078915635234,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T16:40:55.113923+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9987073932471763,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T16:41:19.200040+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.998719124288454,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T16:41:38.212288+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9986775379985376,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T16:41:57.235283+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9986491454694159,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T16:42:15.199345+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9986365928503691,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T16:42:33.076870+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9986241119106131,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T16:42:50.994334+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9986172875085408,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T16:43:08.883452+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.99861854108579,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T16:43:26.794988+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9986240393879097,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T16:43:45.030526+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9986360247662759,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T16:44:03.073598+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9986564963939918,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T16:44:21.100084+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9986203419314363,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T16:44:39.151371+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9985852294142085,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T17:28:11.118744+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9985791676945143,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T17:28:30.637806+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9985523791731997,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T17:28:49.082651+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9985518799847287,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T17:29:07.310772+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9985631492309391,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T17:29:27.204076+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9985246794648498,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T17:29:47.923720+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9984986961265802,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T17:30:09.088764+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9984877279718742,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T17:30:28.486247+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9984756981143925,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T17:30:47.675398+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9984691092671811,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T17:31:06.228333+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9984702962666789,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T17:31:24.941275+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9984755713703789,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T17:31:43.531770+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9984870964604683,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T17:32:03.457200+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9985075096313226,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T17:32:22.409086+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9984740305229477,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-08T17:32:42.314842+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9984424782702476,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:40:10.069888+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9984366219225341,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:40:38.940332+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9984120360820113,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:41:04.386672+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9984115373275996,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:41:38.824502+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9984223795573285,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:42:33.561904+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9983866358908339,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:43:27.931566+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9983627443942488,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:44:18.375061+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9983531261171369,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:44:46.389585+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9983415157763965,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:45:10.627470+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9983351467276306,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:45:34.966165+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9983362731695027,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:46:06.776400+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9983413422320782,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:46:39.914114+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.998352440899721,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:47:45.629748+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9983727179395964,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:48:35.000392+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9983415860253487,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:49:20.487168+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9983130787709863,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:49:55.608562+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9983074142953213,
+    "combined_distance": 0.999606653502461
+  },
+  {
+    "timestamp": "2026-05-09T03:50:27.748127+00:00",
+    "baseline_distance": 0.999606653502461,
+    "live_distance": 0.9983074142953213,
+    "combined_distance": 0.999606653502461
+  }
+]

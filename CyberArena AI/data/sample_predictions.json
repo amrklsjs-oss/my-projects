@@ -1,0 +1,178 @@
+{
+  "summary": {
+    "total_events": 18,
+    "accuracy": 1.0,
+    "predicted_distribution": {
+      "Benign": 4,
+      "Brute Force": 3,
+      "Port Scan": 3,
+      "Data Exfiltration": 3,
+      "Privilege Escalation": 3,
+      "Suspicious Access": 2
+    }
+  },
+  "predictions": [
+    {
+      "event_id": "E001",
+      "true_label": "Benign",
+      "predicted_label": "Benign",
+      "severity": "Low",
+      "confidence": 0.55,
+      "anomaly_score": 0.251,
+      "explanation": "The event stays close to the expected baseline."
+    },
+    {
+      "event_id": "E002",
+      "true_label": "Benign",
+      "predicted_label": "Benign",
+      "severity": "Low",
+      "confidence": 0.55,
+      "anomaly_score": 0.228,
+      "explanation": "The event stays close to the expected baseline."
+    },
+    {
+      "event_id": "E003",
+      "true_label": "Brute Force",
+      "predicted_label": "Brute Force",
+      "severity": "Critical",
+      "confidence": 0.953,
+      "anomaly_score": 1.0,
+      "explanation": "Many failed logins from the same source indicate credential guessing."
+    },
+    {
+      "event_id": "E004",
+      "true_label": "Brute Force",
+      "predicted_label": "Brute Force",
+      "severity": "Critical",
+      "confidence": 0.901,
+      "anomaly_score": 0.843,
+      "explanation": "Many failed logins from the same source indicate credential guessing."
+    },
+    {
+      "event_id": "E005",
+      "true_label": "Port Scan",
+      "predicted_label": "Port Scan",
+      "severity": "Critical",
+      "confidence": 0.899,
+      "anomaly_score": 0.836,
+      "explanation": "A high number of unique destination ports indicates reconnaissance."
+    },
+    {
+      "event_id": "E006",
+      "true_label": "Port Scan",
+      "predicted_label": "Port Scan",
+      "severity": "Medium",
+      "confidence": 0.802,
+      "anomaly_score": 0.548,
+      "explanation": "A high number of unique destination ports indicates reconnaissance."
+    },
+    {
+      "event_id": "E007",
+      "true_label": "Data Exfiltration",
+      "predicted_label": "Data Exfiltration",
+      "severity": "Critical",
+      "confidence": 0.953,
+      "anomaly_score": 1.0,
+      "explanation": "Large outbound traffic from a critical asset suggests data staging or exfiltration."
+    },
+    {
+      "event_id": "E008",
+      "true_label": "Data Exfiltration",
+      "predicted_label": "Data Exfiltration",
+      "severity": "High",
+      "confidence": 0.855,
+      "anomaly_score": 0.704,
+      "explanation": "Large outbound traffic from a critical asset suggests data staging or exfiltration."
+    },
+    {
+      "event_id": "E009",
+      "true_label": "Privilege Escalation",
+      "predicted_label": "Privilege Escalation",
+      "severity": "Critical",
+      "confidence": 0.953,
+      "anomaly_score": 1.0,
+      "explanation": "Unusual process activity with high privilege usage suggests escalation."
+    },
+    {
+      "event_id": "E010",
+      "true_label": "Privilege Escalation",
+      "predicted_label": "Privilege Escalation",
+      "severity": "Critical",
+      "confidence": 0.902,
+      "anomaly_score": 0.847,
+      "explanation": "Unusual process activity with high privilege usage suggests escalation."
+    },
+    {
+      "event_id": "E011",
+      "true_label": "Suspicious Access",
+      "predicted_label": "Suspicious Access",
+      "severity": "High",
+      "confidence": 0.821,
+      "anomaly_score": 0.603,
+      "explanation": "Critical asset access outside normal hours is abnormal."
+    },
+    {
+      "event_id": "E012",
+      "true_label": "Suspicious Access",
+      "predicted_label": "Suspicious Access",
+      "severity": "Medium",
+      "confidence": 0.787,
+      "anomaly_score": 0.5,
+      "explanation": "Critical asset access outside normal hours is abnormal."
+    },
+    {
+      "event_id": "E013",
+      "true_label": "Benign",
+      "predicted_label": "Benign",
+      "severity": "Low",
+      "confidence": 0.55,
+      "anomaly_score": 0.173,
+      "explanation": "The event stays close to the expected baseline."
+    },
+    {
+      "event_id": "E014",
+      "true_label": "Benign",
+      "predicted_label": "Benign",
+      "severity": "Low",
+      "confidence": 0.55,
+      "anomaly_score": 0.536,
+      "explanation": "The event stays close to the expected baseline."
+    },
+    {
+      "event_id": "E015",
+      "true_label": "Brute Force",
+      "predicted_label": "Brute Force",
+      "severity": "Critical",
+      "confidence": 0.953,
+      "anomaly_score": 1.0,
+      "explanation": "Many failed logins from the same source indicate credential guessing."
+    },
+    {
+      "event_id": "E016",
+      "true_label": "Port Scan",
+      "predicted_label": "Port Scan",
+      "severity": "Critical",
+      "confidence": 0.945,
+      "anomaly_score": 0.974,
+      "explanation": "A high number of unique destination ports indicates reconnaissance."
+    },
+    {
+      "event_id": "E017",
+      "true_label": "Data Exfiltration",
+      "predicted_label": "Data Exfiltration",
+      "severity": "Critical",
+      "confidence": 0.953,
+      "anomaly_score": 1.0,
+      "explanation": "Large outbound traffic from a critical asset suggests data staging or exfiltration."
+    },
+    {
+      "event_id": "E018",
+      "true_label": "Privilege Escalation",
+      "predicted_label": "Privilege Escalation",
+      "severity": "Critical",
+      "confidence": 0.953,
+      "anomaly_score": 1.0,
+      "explanation": "Unusual process activity with high privilege usage suggests escalation."
+    }
+  ]
+}

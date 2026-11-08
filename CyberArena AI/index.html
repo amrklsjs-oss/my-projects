@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CyberArena AI</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <section class="brand-block" aria-label="Project title">
+          <div class="mark" aria-hidden="true">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+          <div>
+            <h1>CyberArena AI</h1>
+            <p>Autonomous Red Team vs Blue Team cyber range simulator</p>
+          </div>
+        </section>
+
+        <section class="control-strip" aria-label="Simulation controls">
+          <label class="select-wrap">
+            <span>Scenario</span>
+            <select id="scenarioSelect">
+              <option value="web-breach">Public Web Breach</option>
+              <option value="credential-theft">Credential Theft</option>
+              <option value="insider-leak">Insider Data Leak</option>
+            </select>
+          </label>
+          <button id="runBtn" class="primary-btn" type="button" title="Run simulation">
+            <span class="icon play-icon"></span>
+            Run
+          </button>
+          <button id="stepBtn" type="button" title="Advance one turn">
+            <span class="icon step-icon"></span>
+            Step
+          </button>
+          <button id="resetBtn" type="button" title="Reset scenario">
+            <span class="icon reset-icon"></span>
+            Reset
+          </button>
+          <button id="reportBtn" type="button" title="Generate incident report">
+            <span class="icon report-icon"></span>
+            Report
+          </button>
+        </section>
+      </header>
+
+      <section class="score-band" aria-label="Mission status">
+        <article class="metric">
+          <span>Enterprise Risk</span>
+          <strong id="riskScore">34</strong>
+          <div class="meter"><i id="riskMeter"></i></div>
+        </article>
+        <article class="metric">
+          <span>Red Progress</span>
+          <strong id="redProgress">0%</strong>
+          <div class="meter red"><i id="redMeter"></i></div>
+        </article>
+        <article class="metric">
+          <span>Blue Containment</span>
+          <strong id="blueProgress">0%</strong>
+          <div class="meter blue"><i id="blueMeter"></i></div>
+        </article>
+        <article class="metric">
+          <span>Detection Time</span>
+          <strong id="detectTime">--</strong>
+          <div class="mini-note" id="statusNote">Ready for simulation</div>
+        </article>
+      </section>
+
+      <section class="main-grid">
+        <section class="arena-panel" aria-label="Attack graph">
+          <div class="panel-head">
+            <div>
+              <h2>Attack Graph</h2>
+              <p id="scenarioSummary">AI attacker starts outside the company and probes exposed services.</p>
+            </div>
+            <div class="turn-pill">Turn <span id="turnCount">0</span></div>
+          </div>
+          <div class="graph-wrap">
+            <svg id="attackGraph" viewBox="0 0 900 520" role="img" aria-label="Company network attack graph">
+              <defs>
+                <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">
+                  <feGaussianBlur stdDeviation="5" result="blur" />
+                  <feMerge>
+                    <feMergeNode in="blur" />
+                    <feMergeNode in="SourceGraphic" />
+                  </feMerge>
+                </filter>
+              </defs>
+            </svg>
+          </div>
+        </section>
+
+        <aside class="side-panel" aria-label="Agent intelligence">
+          <section class="agent red-agent">
+            <div class="agent-head">
+              <h2>Red Team AI</h2>
+              <span id="redState">Recon</span>
+            </div>
+            <p id="redThought">Looking for the easiest exposed entry point.</p>
+            <ol id="redPlan"></ol>
+          </section>
+
+          <section class="agent blue-agent">
+            <div class="agent-head">
+              <h2>Blue Team AI</h2>
+              <span id="blueState">Monitoring</span>
+            </div>
+            <p id="blueThought">Watching baseline activity and waiting for suspicious patterns.</p>
+            <ol id="bluePlan"></ol>
+          </section>
+
+          <section class="defense-panel">
+            <h2>What-if Defenses</h2>
+            <label><input id="patchWeb" type="checkbox" /> Patch public web server</label>
+            <label><input id="mfaAdmins" type="checkbox" /> Enforce MFA for admins</label>
+            <label><input id="segmentDb" type="checkbox" /> Segment database network</label>
+          </section>
+        </aside>
+      </section>
+
+      <section class="bottom-grid">
+        <section class="timeline-panel" aria-label="Live security timeline">
+          <div class="panel-head compact">
+            <h2>Live SOC Timeline</h2>
+            <span id="eventCount">0 events</span>
+          </div>
+          <div id="timeline" class="timeline" aria-live="polite"></div>
+        </section>
+
+        <section class="alerts-panel" aria-label="Active alerts">
+          <div class="panel-head compact">
+            <h2>Active Alerts</h2>
+            <span id="alertCount">0 alerts</span>
+          </div>
+          <div id="alerts" class="alerts"></div>
+        </section>
+      </section>
+    </main>
+
+    <dialog id="reportDialog">
+      <div class="dialog-head">
+        <h2>Incident Report</h2>
+        <button id="closeReport" type="button" title="Close report">
+          <span class="icon close-icon"></span>
+        </button>
+      </div>
+      <pre id="reportText"></pre>
+      <button id="copyReport" class="primary-btn" type="button">Copy Report</button>
+    </dialog>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
